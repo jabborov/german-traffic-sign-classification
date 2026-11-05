@@ -30,14 +30,15 @@ def  evaluate(model, device, opt):
     test_loader = DataLoader(dataset, batch_size=opt.batch_size, shuffle=False)
 
     # Iterate over the test dataset
-    for image, label in tqdm(test_loader, total=len(test_loader)):
-        image, label = image.to(device), label.to(device)        
+    with torch.no_grad():
+        for image, label in tqdm(test_loader, total=len(test_loader)):
+            image, label = image.to(device), label.to(device)
 
-        output= model(image)       
+            output = model(image)
 
-        _, predicted = torch.max(output, 1)
-        correct_predictions += (predicted == label).sum().item()
-        total_examples += label.size(0)        
+            _, predicted = torch.max(output, 1)
+            correct_predictions += (predicted == label).sum().item()
+            total_examples += label.size(0)        
     print(f'Test Accuracy [{"{:.4f}".format(correct_predictions/total_examples)}]')  
 
 def parse_opt():

@@ -45,9 +45,8 @@ def dataAugmentation(split="train"):
             transforms.AugMix(),
             transforms.RandomEqualize(0.5),
             transforms.GaussianBlur(3, 3),
-            transforms.RandomHorizontalFlip(0.5),
-            transforms.RandomVerticalFlip(0.5),
             transforms.RandomRotation(15),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
             transforms.Resize([32, 32]),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))

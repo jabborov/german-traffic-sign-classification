@@ -26,14 +26,14 @@ def train(model, device, opt):
     scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=5)
     criterion = nn.CrossEntropyLoss()  
 
-    # Datasets
-    dataset = TrafficSignDataset(root=opt.path, split="train", transform=True)   
-    train_data, validation_data = train_validation_split(dataset, trainSize=0.8)
-    print(f"Train set size:  {len(train_data)}, Validation set size: , {len(validation_data)}")
+    # Datasets - create separate instances to avoid shared transform issue
+    train_dataset = TrafficSignDataset(root=opt.path, split="train", transform=dataAugmentation('train'))
+    val_dataset = TrafficSignDataset(root=opt.path, split="train", transform=dataAugmentation('validation'))
 
-    # Data Augmentation
-    train_data.dataset.transform = dataAugmentation('train')
-    validation_data.dataset.transform = dataAugmentation('validation')
+    # Split into train and validation using same indices but different transforms
+    train_data, _ = train_validation_split(train_dataset, trainSize=0.8)
+    _, validation_data = train_validation_split(val_dataset, trainSize=0.8)
+    print(f"Train set size: {len(train_data)}, Validation set size: {len(validation_data)}")
 
     # Data Loader
     train_loader = DataLoader(dataset=train_data, batch_size=opt.batch_size, shuffle=True)
@@ -50,21 +50,21 @@ def train(model, device, opt):
         for image, label in tqdm(train_loader, total=len(train_loader)):
             image, label = image.to(device), label.to(device)
 
-            output= model(image)
-            loss = criterion(output, label)  
-
-            epoch_loss = loss.item()
+            optimizer.zero_grad()
+            output = model(image)
+            loss = criterion(output, label)
             loss.backward()
             optimizer.step()
-            optimizer.zero_grad()
 
+            epoch_loss += loss.item()
             _, predicted = torch.max(output, 1)
             correct_predictions += (predicted == label).sum().item()
             total_examples += label.size(0)
-            
-        print(f'Epoch {epoch}, Train Loss [{"{:.4f}".format(epoch_loss)}], Train Accuracy [{"{:.4f}".format(correct_predictions/total_examples)}]')
+
+        print(f'Epoch {epoch}, Train Loss [{"{:.4f}".format(epoch_loss / len(train_loader))}], Train Accuracy [{"{:.4f}".format(correct_predictions/total_examples)}]')
 
         val_acc, val_loss = validate(model, validation_loader, device, criterion)
+        model.train()
         print(f'Validation Loss [{"{:.4f}".format(val_loss)}], Validation Accuracy [{"{:.4f}".format(val_acc)}]')
 
         scheduler.step()

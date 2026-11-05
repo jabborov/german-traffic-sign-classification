@@ -1,5 +1,13 @@
 *.pyc
+__pycache__/
 *.png
 *.csv
-./gtrsb_dataset
-.~lock.*
+
+# Dataset (download separately, see README)
+gtrsb_dataset/
+
+# LibreOffice lock files
+.~lock.*#
+
+# C++ build output
+/run

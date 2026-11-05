@@ -1,81 +1,107 @@
-from torch.utils.data import Dataset, random_split
-import torchvision.transforms as transforms
-
-from PIL import Image
 import csv
 import pathlib
+from typing import Callable, Optional
+
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+from torch.utils.data import Dataset, Subset, random_split
+
+# Preprocessing constants. inference.cc must use the same values.
+IMAGE_SIZE = 32
+MEAN = (0.5, 0.5, 0.5)
+STD = (0.5, 0.5, 0.5)
+
 
 class TrafficSignDataset(Dataset):
-    """Loading and reading datasets"""
-    def __init__(self, root: str, split: str, transform: bool):      
-                
+    """Reads GTSRB samples listed in Train.csv / Test.csv (columns: ClassId, Path)."""
+
+    def __init__(self, root: str, split: str = "train", transform: Optional[Callable] = None):
+        if split not in ("train", "test"):
+            raise ValueError(f"split must be 'train' or 'test', got {split!r}")
+
         self.base_folder = pathlib.Path(root)
         self.split = split
-        # self.csv_file = None
-        if self.split == 'train':
-            self.csv_file = self.base_folder / 'Train.csv' 
-        else:
-            self.csv_file = self.base_folder /'Test.csv'        
-        print("***", self.csv_file)
-        
-        with open(str(self.csv_file)) as csvfile:
-            samples = [(str(self.base_folder / row['Path']),int(row['ClassId'])) 
-            for row in csv.DictReader(csvfile,delimiter=',',skipinitialspace=True)]
+        self.csv_file = self.base_folder / ("Train.csv" if split == "train" else "Test.csv")
+        if not self.csv_file.is_file():
+            raise FileNotFoundError(f"CSV file not found: {self.csv_file}")
 
-        self.samples = samples
-        
+        with open(self.csv_file, newline="") as csvfile:
+            self.samples = [
+                (str(self.base_folder / row["Path"]), int(row["ClassId"]))
+                for row in csv.DictReader(csvfile, delimiter=",", skipinitialspace=True)
+            ]
+
         self.transform = transform
 
     def __len__(self):
         return len(self.samples)
-    
+
     def __getitem__(self, index: int):
-        path, classId =  self.samples[index]
-        sample = Image.open(path).convert('RGB')
-        if self.transform: 
-            sample = self.transform(sample)           
-        return sample,classId
-
-def dataAugmentation(split="train"):
-    """Apply data augmentation methods for train, validation and test datasets"""  
-    
-    if split == 'train':
-        trainTransforms = transforms.Compose([
-            transforms.ColorJitter(brightness=1.0, contrast=0.5, saturation=1, hue=0.1),
-            transforms.AugMix(),
-            transforms.RandomEqualize(0.5),
-            transforms.GaussianBlur(3, 3),
-            transforms.RandomRotation(15),
-            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-            transforms.Resize([32, 32]),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])
-        return trainTransforms
-    
-    elif split == 'validation':
-        validationTransform = transforms.Compose([
-            transforms.Resize([32, 32]),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ])        
-        return validationTransform
-    
-    else:
-        testTransform = transforms.Compose([
-            transforms.Resize([32, 32]),
-            transforms.ToTensor(),
-            transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-        ]) 
-        return testTransform   
-
-def train_validation_split(dataset, trainSize: float):
-    """Split Training dataset into train and validation datasets"""
-
-    trainSize = int(trainSize * len(dataset)) 
-    validationSize = int(len(dataset) - trainSize)
-    return random_split(dataset, [trainSize, validationSize])
+        path, class_id = self.samples[index]
+        with Image.open(path) as img:
+            sample = img.convert("RGB")
+        if self.transform is not None:
+            sample = self.transform(sample)
+        return sample, class_id
 
 
+class TransformedSubset(Dataset):
+    """A subset with its own transform, so train and validation splits do not share one."""
+
+    def __init__(self, subset: Subset, transform: Optional[Callable] = None):
+        self.subset = subset
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.subset)
+
+    def __getitem__(self, index: int):
+        sample, class_id = self.subset[index]
+        if self.transform is not None:
+            sample = self.transform(sample)
+        return sample, class_id
 
 
+def dataAugmentation(split: str = "train"):
+    """Transforms for the train, validation and test datasets.
+
+    Flips are not used: they change the meaning of direction signs
+    (e.g. classes 33/34 turn right/left, 36/37, 38/39 keep right/left).
+    """
+    base = [
+        transforms.Resize([IMAGE_SIZE, IMAGE_SIZE]),
+    ]
+    tail = [
+        transforms.ToTensor(),
+        transforms.Normalize(MEAN, STD),
+    ]
+
+    if split == "train":
+        augment = [
+            transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0.05),
+            transforms.RandomApply([transforms.GaussianBlur(3, sigma=(0.1, 1.0))], p=0.2),
+        ]
+        return transforms.Compose(base + augment + tail)
+
+    if split in ("validation", "test"):
+        return transforms.Compose(base + tail)
+
+    raise ValueError(f"Unknown split: {split!r}")
+
+
+def train_validation_split(dataset: Dataset, trainSize: float, seed: int = 0,
+                           train_transform: Optional[Callable] = None,
+                           validation_transform: Optional[Callable] = None):
+    """Split the training dataset into train and validation datasets.
+
+    `dataset` should be created with transform=None; each split gets its own transform.
+    A fixed seed makes the split reproducible.
+    """
+    train_len = int(trainSize * len(dataset))
+    validation_len = len(dataset) - train_len
+    generator = torch.Generator().manual_seed(seed)
+    train_subset, validation_subset = random_split(dataset, [train_len, validation_len], generator=generator)
+    return (TransformedSubset(train_subset, train_transform),
+            TransformedSubset(validation_subset, validation_transform))

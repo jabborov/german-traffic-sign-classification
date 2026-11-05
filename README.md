@@ -1,10 +1,10 @@
-## GTRSB Classification: PyTorch implementation
+## GTSRB Classification: PyTorch implementation
 The German Traffic Sign Recognition Benchmark (GTSRB) is a multi-class, single-image classification challenge held at the International Joint Conference on Neural Networks (IJCNN) 2011. The properties of GTSRB include:
 - Single-image, multi-class classification problem
 - 43 classes
 - More than 50,000 images in total
 
-##  Content Structure
+## Content Structure
 * [Description](#description)
 * [Installation](#installation)
 * [Dataset](#dataset)
@@ -13,71 +13,94 @@ The German Traffic Sign Recognition Benchmark (GTSRB) is a multi-class, single-i
 * [Deployment](#deployment)
 * [References](#references)
 * [Licence](#licence)
+
 # Description
-I designed my model by adding two Convolutional Neural Network (CNN) layers, effectively deepening the network architecture. This enhancement enabled me to achieve an impressive accuracy of 94.0%. This demonstrates the effectiveness of employing deeper architectures in improving model performance. The trained weight file has been converted into an ONNX file format to facilitate execution within a C language environment. The ONNXRUNTIME C API is employed for running the model efficiently on CPU memory.
+The model is a small CNN with two convolutional blocks (Conv → BatchNorm → ReLU → MaxPool) followed by two fully connected layers. It takes 3×32×32 RGB images normalized to [-1, 1]. The trained PyTorch weights are converted to ONNX and run on CPU from C++ through the ONNX Runtime C API.
+
+### Results (GTSRB test set, 12,630 images)
+| Weights | PyTorch (`evaluate.py`) | C++ / ONNX Runtime (`inference.cc`) |
+|---|---|---|
+| `weights/best.pt` / `best.onnx` (current) | **97.52%** | **97.53%** |
+| Previous weights (older, buggy training script) | 94.56% | 95.30% |
+
+Average C++ inference time: about 0.05 ms per image on CPU (batch size 1).
 
 # Installation
 Download the project:
-```git clone https://github.com/jabborov/german_traffic_sign_classification.git```
+```
+git clone https://github.com/jabborov/german_traffic_sign_classification.git
+cd german_traffic_sign_classification
+```
 
-Install requrement libraries:
-```pip install -r requirements.txt ```
+Install the required libraries:
+```
+pip install -r requirements.txt
+```
 
 # Dataset
-Download [here](https://www.kaggle.com/datasets/meowmeowmeowmeowmeow/gtsrb-german-traffic-sign/data)
+Download [here](https://www.kaggle.com/datasets/meowmeowmeowmeowmeow/gtsrb-german-traffic-sign/data) and extract it into `./gtrsb_dataset` (the default `--path`):
 
 ```
-data-|
-     |-train-|
-             |-0
-             |-1
-             ...
-             |-41
-             |-42
-                
-     |-test -|
-             |-000001.png
-             |-000002.png
-             ...             
-     |-Train.csv
-     |-Test.csv
-    
+gtrsb_dataset/
+├── Train/
+│   ├── 0/
+│   ├── 1/
+│   ├── ...
+│   └── 42/
+├── Test/
+│   ├── 00000.png
+│   ├── 00001.png
+│   └── ...
+├── Train.csv     # columns include ClassId, Path (e.g. Train/20/00020_00000_00000.png)
+└── Test.csv      # columns include ClassId, Path (e.g. Test/00000.png)
 ```
+
+> Note: the paths in `Train.csv` and `Test.csv` must match the folder names. Some copies of the dataset name the image folders `train_images/` and `test_images/` instead of `Train/` and `Test/`. In that case, create symlinks instead of renaming:
+> ```
+> cd gtrsb_dataset
+> ln -s train_images Train
+> ln -s test_images Test
+> ```
 
 # Train
-```python train.py --path ./data  ```
-
+```
+python train.py --path ./gtrsb_dataset
+```
+Useful options: `--epochs` (default 100), `--patience` (early stopping, default 15), `--batch-size`, `--lr`, `--workers`, `--seed`. The best weights (by validation accuracy) are saved to `./weights/best.pt`.
 
 # Evaluation
-```python inference.py --path ./data --weights ./weights/best.pt```
+```
+python evaluate.py --path ./gtrsb_dataset --weights ./weights/best.pt
+```
 
 # Deployment
-1. Installation ONNX RUNTIME C API
-``` // Installation ONNX RUNTIME C API
-# Step 1
-- Download onnxruntime-linux-x64-1.16.3.tgz : https://github.com/microsoft/onnxruntime/releases
-- Just unpack files: These are pre-build files, so we do not need any setup processes: onnxruntime-linux-x64-1.16.3.tgz  
- 
-# Step2
-If There are some library path errors:"error while loading shared libraries: libonnxruntime.so.1.16.3: cannot open shared object file: No such file or directory"
+### 1. ONNX Runtime C API
+The prebuilt ONNX Runtime 1.16.3 for Linux x64 is included in `./onnxruntime` (`include/` and `lib/`).
+To use another version, download `onnxruntime-linux-x64-<version>.tgz` from the [releases page](https://github.com/microsoft/onnxruntime/releases) and unpack it there. No build step is needed.
 
-Do following commands:
-echo $LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=~/german_traffic_sign_classification/deployment/onnxruntime/lib
-echo $LD_LIBRARY_PATH 
+### 2. Convert to ONNX
 ```
-
-2. Conversion to ONNX
-
-``` python torch2onnx.py --save-onnx ./weights/best.onnx```
-
-3. Run C code
-
+python pytorch2onnx.py --weights ./weights/best.pt --save-onnx ./weights/best.onnx
 ```
-g++ -I/onnxruntime/include -o run inference.cc -lonnxruntime -L/onnxruntime/lib `pkg-config --cflags --libs opencv4` -std=c++17
+After export the script checks the model and compares ONNX Runtime outputs with PyTorch (skip with `--no-verify`).
 
-./run 
+### 3. Build and run the C++ code
+Requires OpenCV 4 (`pkg-config opencv4`) and a C++17 compiler. Run from the project root:
+```
+g++ -std=c++17 -O2 inference.cc -o run \
+    -I./onnxruntime/include -L./onnxruntime/lib -lonnxruntime \
+    -Wl,-rpath,'$ORIGIN/onnxruntime/lib' \
+    `pkg-config --cflags --libs opencv4`
 
+./run ./weights/best.onnx ./gtrsb_dataset
+```
+- If the data folder contains `Test.csv`, every listed image is classified and accuracy is reported.
+- Otherwise every image in the folder is classified (predictions only).
+- Average inference time per image is printed at the end.
+
+The rpath flag lets `./run` find `libonnxruntime.so` without setting `LD_LIBRARY_PATH`. If you build without it and see `error while loading shared libraries: libonnxruntime.so.1.16.3`, run:
+```
+export LD_LIBRARY_PATH=$PWD/onnxruntime/lib:$LD_LIBRARY_PATH
 ```
 
 # References
